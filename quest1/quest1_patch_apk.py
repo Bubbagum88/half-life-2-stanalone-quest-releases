@@ -5,6 +5,7 @@ Three fixes, each documented next to its code below:
   2. OpenXR: libsourcevr.so asks for API 1.1; the Quest 1 runtime only accepts 1.0.
   3. DXVK: libdxvk_d3d9.so requires a Vulkan extension and features the Adreno 540 driver lacks.
   4. DX level: libshaderapidx9.so tests sRGB support on DXT1, which the Quest 1 can't read at all.
+  5. Manifest: the game activity needs com.oculus.intent.category.VR or v50 shows it as a flat panel.
 Every other APK entry is copied unchanged (raw bytes), and the APK is v1-signed with our own key
 (targetSdk 24, so v1 is enough). Different key from the official APK: uninstall that first.
 Usage: python3 quest1_patch_apk.py hl2quest-vr-1.02.apk hl2quest-vr-1.02-quest1.apk WORKDIR
@@ -64,6 +65,37 @@ def patch_words(data, edits, what):
         assert cur == old, (what + " word mismatch", hex(off), hex(cur))
         struct.pack_into("<I", d, off, new)
     return bytes(d)
+# AndroidManifest.xml: SDLActivity (the game) is marked VR only with the OpenXR category IMMERSIVE_HMD,
+# which newer Horizon OS honours but the Quest 1's v50 doesn't: it opens the game as a flat 2D panel
+# ("launching as reprojected android app") and the XR session never becomes visible (black box).
+# v50 needs com.oculus.intent.category.VR (same fix TPVR needed). Swap the string in the manifest's
+# string pool; Quest 2/3 accept com.oculus.intent.category.VR too.
+AMF = "AndroidManifest.xml"
+MF_OLD, MF_NEW = "org.khronos.openxr.intent.category.IMMERSIVE_HMD", "com.oculus.intent.category.VR"
+def patch_manifest(d):
+    """Replace one string in the binary manifest's UTF-16 string pool (no styles)."""
+    assert d[:4] == b"\x03\x00\x08\x00"
+    t, hs, sz = struct.unpack_from("<HHI", d, 8)
+    cnt, stc, flags, ss, sts = struct.unpack_from("<IIIII", d, 16)
+    assert t == 1 and hs == 28 and stc == 0 and not (flags & 0x100), "unexpected string pool"
+    offs = struct.unpack_from("<%dI" % cnt, d, 8 + hs)
+    strs = []
+    for o in offs:
+        q = 8 + ss + o; n = struct.unpack_from("<H", d, q)[0]; q += 2
+        if n & 0x8000: n = ((n & 0x7fff) << 16) | struct.unpack_from("<H", d, q)[0]; q += 2
+        strs.append(d[q:q + 2 * n].decode("utf-16-le"))
+    assert strs.count(MF_OLD) == 1, ("manifest string not found exactly once", strs.count(MF_OLD))
+    strs[strs.index(MF_OLD)] = MF_NEW
+    body = b""; noffs = []
+    for s_ in strs:
+        noffs.append(len(body)); e = s_.encode("utf-16-le"); n = len(e) // 2
+        assert n < 0x8000
+        body += struct.pack("<H", n) + e + b"\0\0"
+    body += b"\0" * (-len(body) % 4)
+    nss = hs + 4 * cnt
+    pool = struct.pack("<HHIIIIII", 1, hs, nss + len(body), cnt, 0, flags, nss, 0) + struct.pack("<%dI" % cnt, *noffs) + body
+    out = d[:8] + pool + d[8 + sz:]
+    return out[:4] + struct.pack("<I", len(out)) + out[8:]
 def patch_so(data):
     assert data.count(SO_OLD) == 1, ("apiVersion code not found exactly once", data.count(SO_OLD))
     return data.replace(SO_OLD, SO_NEW)
@@ -82,7 +114,7 @@ def is_sig(n):
     return n == "META-INF/MANIFEST.MF" or (n.startswith("META-INF/") and n.upper().rsplit("/",1)[-1].endswith((".SF",".RSA",".EC",".DSA")))
 infos = [i for i in zin.infolist() if not is_sig(i.filename)]
 def b64(d): return base64.b64encode(hashlib.sha256(d).digest()).decode()
-newjs = None; newso = None; newdx = None; newsa = None; sections = []
+newjs = None; newso = None; newdx = None; newsa = None; newmf = None; sections = []
 for i in infos:
     if i.filename == JS:
         newjs = patch_js(zin.read(i)); d = b64(newjs)
@@ -90,6 +122,8 @@ for i in infos:
         newso = patch_so(zin.read(i)); d = b64(newso)
     elif i.filename == DX:
         newdx = patch_dx(zin.read(i)); d = b64(newdx)
+    elif i.filename == AMF:
+        newmf = patch_manifest(zin.read(i)); d = b64(newmf)
     elif i.filename == SA:
         newsa = patch_words(zin.read(i), SA_EDITS, "shaderapidx9"); d = b64(newsa)
     else:
@@ -102,6 +136,7 @@ assert newjs is not None, "launcher.js not found"
 assert newso is not None, "libsourcevr.so not found"
 assert newdx is not None, "libdxvk_d3d9.so not found"
 assert newsa is not None, "libshaderapidx9.so not found"
+assert newmf is not None, "AndroidManifest.xml not found"
 mf_main = "Manifest-Version: 1.0\r\nCreated-By: quest1-patcher\r\n\r\n"
 MF = (mf_main + "".join(s for _, s in sections)).encode()
 SF = ("Signature-Version: 1.0\r\nCreated-By: quest1-patcher\r\n"
@@ -145,6 +180,8 @@ with open(tmp, "wb") as out:
             put_bytes(SO, newso, i.date_time, stored=(i.compress_type == 0)); continue
         if i.filename == DX:
             put_bytes(DX, newdx, i.date_time, stored=(i.compress_type == 0)); continue
+        if i.filename == AMF:
+            put_bytes(AMF, newmf, i.date_time, stored=(i.compress_type == 0)); continue
         if i.filename == SA:
             put_bytes(SA, newsa, i.date_time, stored=(i.compress_type == 0)); continue
         assert i.compress_type in (0, 8), (i.filename, i.compress_type)
@@ -159,5 +196,5 @@ os.replace(tmp, dst)
 # self-check: every entry reads back with a good CRC, and launcher.js is the patched one
 z = zipfile.ZipFile(dst); bad = z.testzip()
 assert bad is None, ("CRC error in", bad)
-assert z.read(JS) == newjs and z.read(SO) == newso and z.read(DX) == newdx and z.read(SA) == newsa
+assert z.read(JS) == newjs and z.read(SO) == newso and z.read(DX) == newdx and z.read(SA) == newsa and z.read(AMF) == newmf
 print("OK wrote", dst, len(cdir), "entries")

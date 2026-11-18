@@ -4,9 +4,9 @@ This folder is not part of the official releases. It patches the official
 `hl2quest-vr.apk` **1.02** so the game can run on the original **Meta Quest 1**
 (Snapdragon 835 / Adreno 540, Horizon OS v50, Android 10). Only Portal has been tried so far.
 
-**Status: not playable yet.** With fixes 1-4 Portal reaches its main menu
-(OpenXR frames submitted, menu sounds play), but at about 15 fps and shown as a
-black flat panel. Fix 5 (the panel) is built but not yet tested.
+**Status: not playable yet.** With fixes 1-5 Portal's main menu runs in VR on
+the Quest 1, at about 26 fps of 72 with `eye_scale` 70. Loading a map is not
+tested yet.
 
 ## What the patch changes
 
@@ -19,7 +19,7 @@ checks every byte it replaces, so it refuses to run on any other APK.
 | 2 | `lib/arm64-v8a/libsourcevr.so` (file offset `0x16304`) | Requests OpenXR 1.1.53; the v50 runtime only accepts 1.0, so `xrCreateInstance` returns `-4`. | Requested version is now 1.0.0. The library only uses 1.0 functions. | Yes, "OpenXR instance created" |
 | 3 | `lib/arm64-v8a/libdxvk_d3d9.so` (DXVK 1.9.2) | `Required Vulkan extension VK_KHR_image_format_list not supported`. D3D9 also forces `geometryShader`, `multiViewport`, `textureCompressionBC`, `occlusionQueryPrecise`, all 0 on the Adreno 540 (driver 512.555, Vulkan 1.1.128). | `image_format_list` marked Optional in `DxvkAdapter::createDevice`. The four features are no longer forced in `D3D9DeviceEx::GetDeviceFeatures`. 4 instructions. | Yes, Vulkan device and swapchain created |
 | 4 | `lib/arm64-v8a/libshaderapidx9.so` (file offsets `0x8c3c0`, `0x8c3e4`) | Source only allows DX level 90 with VS 2.0 + PS 2.0 + sRGB, and it tests sRGB by asking for sRGB reads on **DXT1** textures. The Adreno 540 has no DXT/BC, so the maximum DX level drops to 80/81, `stdshader_dx9` is never loaded, and every material fails (`unknown shader "UnlitGeneric"`); `-dxlevel 90` can't raise the maximum. | The sRGB test asks about A8R8G8B8 instead (supported with sRGB and linear filtering on Quest 1). The follow-up A8R8G8B8 sRGB+filter check is unchanged. | Yes, main menu loads, materials work |
-| 5 | `AndroidManifest.xml` | The game activity (`SDLActivity`) is marked VR with the OpenXR category `org.khronos.openxr.intent.category.IMMERSIVE_HMD`. Horizon OS v50 doesn't know it and opens the game as a 2D panel ("launching as reprojected android app"), so the XR session is never shown: a black flat box. | Category string replaced with `com.oculus.intent.category.VR` in the binary manifest's string pool. | Not yet |
+| 5 | `AndroidManifest.xml` | The game activity (`SDLActivity`) is marked VR with the OpenXR category `org.khronos.openxr.intent.category.IMMERSIVE_HMD`. Horizon OS v50 doesn't know it and opens the game as a 2D panel ("launching as reprojected android app"), so the XR session is never shown: a black flat box. | Category string replaced with `com.oculus.intent.category.VR` in the binary manifest's string pool. | Yes, main menu in VR |
 
 The APK is re-signed with our own key (v1 is enough, targetSdk 24). It
 can't install over the official app, so uninstall that first. Your saved
@@ -75,4 +75,5 @@ GPU without DXT. Fix 4 changes that format.
   `VK_EXT_shader_viewport_index_layer` is missing (Quest 1 has neither).
 - Starting games from the launcher on Quest 1.
 - Performance: about 15 fps at the default 100% eye size (GPU 93-99% busy,
-  about 200 MB free memory). Not yet measured at lower eye sizes.
+  about 200 MB free memory); about 26 fps at 70% (1444x1544, 34 ms per frame,
+  460 MB free) in the main menu.

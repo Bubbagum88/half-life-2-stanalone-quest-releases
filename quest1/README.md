@@ -4,8 +4,9 @@ This folder is not part of the official releases. It patches the official
 `hl2quest-vr.apk` **1.02** so the game can run on the original **Meta Quest 1**
 (Snapdragon 835 / Adreno 540, Horizon OS v50, Android 10). Only Portal has been tried so far.
 
-**Status: not playable yet.** The game gets past startup and loads Portal's
-game libraries. Fix 4 (shaders / DX level) is built but not yet tested.
+**Status: not playable yet.** With fixes 1-4 Portal reaches its main menu
+(OpenXR frames submitted, menu sounds play), but at about 15 fps and shown as a
+black flat panel. Fix 5 (the panel) is built but not yet tested.
 
 ## What the patch changes
 
@@ -17,7 +18,8 @@ checks every byte it replaces, so it refuses to run on any other APK.
 | 1 | `assets/hl2quest_launcher_web/launcher.js` | The menu is a WebView page using `?.` / `??` (Chrome 80+). The Quest 1 WebView is Chrome 74.0.3729, so the script fails to parse and the menu is blank. | 6 expressions rewritten as plain checks. | Yes, menu works |
 | 2 | `lib/arm64-v8a/libsourcevr.so` (file offset `0x16304`) | Requests OpenXR 1.1.53; the v50 runtime only accepts 1.0, so `xrCreateInstance` returns `-4`. | Requested version is now 1.0.0. The library only uses 1.0 functions. | Yes, "OpenXR instance created" |
 | 3 | `lib/arm64-v8a/libdxvk_d3d9.so` (DXVK 1.9.2) | `Required Vulkan extension VK_KHR_image_format_list not supported`. D3D9 also forces `geometryShader`, `multiViewport`, `textureCompressionBC`, `occlusionQueryPrecise`, all 0 on the Adreno 540 (driver 512.555, Vulkan 1.1.128). | `image_format_list` marked Optional in `DxvkAdapter::createDevice`. The four features are no longer forced in `D3D9DeviceEx::GetDeviceFeatures`. 4 instructions. | Yes, Vulkan device and swapchain created |
-| 4 | `lib/arm64-v8a/libshaderapidx9.so` (file offsets `0x8c3c0`, `0x8c3e4`) | Source only allows DX level 90 with VS 2.0 + PS 2.0 + sRGB, and it tests sRGB by asking for sRGB reads on **DXT1** textures. The Adreno 540 has no DXT/BC, so the maximum DX level drops to 80/81, `stdshader_dx9` is never loaded, and every material fails (`unknown shader "UnlitGeneric"`); `-dxlevel 90` can't raise the maximum. | The sRGB test asks about A8R8G8B8 instead (supported with sRGB and linear filtering on Quest 1). The follow-up A8R8G8B8 sRGB+filter check is unchanged. | Not yet |
+| 4 | `lib/arm64-v8a/libshaderapidx9.so` (file offsets `0x8c3c0`, `0x8c3e4`) | Source only allows DX level 90 with VS 2.0 + PS 2.0 + sRGB, and it tests sRGB by asking for sRGB reads on **DXT1** textures. The Adreno 540 has no DXT/BC, so the maximum DX level drops to 80/81, `stdshader_dx9` is never loaded, and every material fails (`unknown shader "UnlitGeneric"`); `-dxlevel 90` can't raise the maximum. | The sRGB test asks about A8R8G8B8 instead (supported with sRGB and linear filtering on Quest 1). The follow-up A8R8G8B8 sRGB+filter check is unchanged. | Yes, main menu loads, materials work |
+| 5 | `AndroidManifest.xml` | The game activity (`SDLActivity`) is marked VR with the OpenXR category `org.khronos.openxr.intent.category.IMMERSIVE_HMD`. Horizon OS v50 doesn't know it and opens the game as a 2D panel ("launching as reprojected android app"), so the XR session is never shown: a black flat box. | Category string replaced with `com.oculus.intent.category.VR` in the binary manifest's string pool. | Not yet |
 
 The APK is re-signed with our own key (v1 is enough, targetSdk 24). It
 can't install over the official app, so uninstall that first. Your saved
@@ -45,8 +47,15 @@ Reuse the same key folder for later builds so they install with `adb install -r`
   adb shell 'am start -n com.valvesoftware.source.vrtest/org.libsdl.app.SDLActivity --es gamedir portal --es argv -vr\ -novid --ez legacy_gles false'
   ```
 - `legacy_gles true` makes no difference for Portal: it always uses DXVK.
+- **Eye resolution:** `libsourcevr.so` renders 100% of the Quest 3's
+  2064x2208 per eye by default, far above the Quest 1's 1216x1344. The
+  property `debug.hl2q3vr.eye_scale` lowers it, but only these values are
+  accepted: 70, 75, 90, 100, 114 (anything else, such as 59, is ignored):
+  ```
+  adb shell setprop debug.hl2q3vr.eye_scale 70
+  ```
 
-## Previous blocker (fix 4, not yet tested)
+## Previous blocker (fixed by fix 4)
 
 ```
 Error: Material "debug/debugempty" uses unknown shader "UnlitGeneric"
@@ -65,4 +74,5 @@ GPU without DXT. Fix 4 changes that format.
 - DXVK's internal layered-image copies use a geometry shader when
   `VK_EXT_shader_viewport_index_layer` is missing (Quest 1 has neither).
 - Starting games from the launcher on Quest 1.
-- Performance on the Snapdragon 835 is unknown.
+- Performance: about 15 fps at the default 100% eye size (GPU 93-99% busy,
+  about 200 MB free memory). Not yet measured at lower eye sizes.

@@ -4,6 +4,7 @@ Three fixes, each documented next to its code below:
      whole script fails to parse and the menu is blank. The 6 edits rewrite them as plain checks.
   2. OpenXR: libsourcevr.so asks for API 1.1; the Quest 1 runtime only accepts 1.0.
   3. DXVK: libdxvk_d3d9.so requires a Vulkan extension and features the Adreno 540 driver lacks.
+  4. DX level: libshaderapidx9.so tests sRGB support on DXT1, which the Quest 1 can't read at all.
 Every other APK entry is copied unchanged (raw bytes), and the APK is v1-signed with our own key
 (targetSdk 24, so v1 is enough). Different key from the official APK: uninstall that first.
 Usage: python3 quest1_patch_apk.py hl2quest-vr-1.02.apk hl2quest-vr-1.02-quest1.apk WORKDIR
@@ -47,6 +48,22 @@ def patch_dx(data):
         assert cur == old, ("dxvk word mismatch", hex(off), hex(cur))
         struct.pack_into("<I", d, off, new)
     return bytes(d)
+# libshaderapidx9.so: Source decides "supports sRGB" by asking for sRGB reads on DXT1 textures, and dx90
+# needs sRGB (max DX level = 90 only with VS2.0 + PS2.0 + sRGB; caps bits 3, 6, 21). The Adreno 540 has
+# no DXT/BC at all, so the answer is no, the max DX level drops to 80/81, stdshader_dx9 is never loaded
+# and every material fails ("unknown shader UnlitGeneric"). Ask the same question about A8R8G8B8 instead,
+# which the Quest 1 does support with sRGB + linear filtering (the follow-up A8R8G8B8 check is unchanged).
+#   mov w6,#0x5844 ; movk w6,#0x3154,lsl#16  ('DXT1')  ->  mov w6,#0x15 (D3DFMT_A8R8G8B8) ; nop
+SA = "lib/arm64-v8a/libshaderapidx9.so"
+SA_EDITS = [(0x8c3c0, 0x528b0886, 0x528002a6),
+            (0x8c3e4, 0x72a62a86, 0xd503201f)]
+def patch_words(data, edits, what):
+    d = bytearray(data)
+    for off, old, new in edits:
+        cur = struct.unpack_from("<I", d, off)[0]
+        assert cur == old, (what + " word mismatch", hex(off), hex(cur))
+        struct.pack_into("<I", d, off, new)
+    return bytes(d)
 def patch_so(data):
     assert data.count(SO_OLD) == 1, ("apiVersion code not found exactly once", data.count(SO_OLD))
     return data.replace(SO_OLD, SO_NEW)
@@ -65,7 +82,7 @@ def is_sig(n):
     return n == "META-INF/MANIFEST.MF" or (n.startswith("META-INF/") and n.upper().rsplit("/",1)[-1].endswith((".SF",".RSA",".EC",".DSA")))
 infos = [i for i in zin.infolist() if not is_sig(i.filename)]
 def b64(d): return base64.b64encode(hashlib.sha256(d).digest()).decode()
-newjs = None; newso = None; newdx = None; sections = []
+newjs = None; newso = None; newdx = None; newsa = None; sections = []
 for i in infos:
     if i.filename == JS:
         newjs = patch_js(zin.read(i)); d = b64(newjs)
@@ -73,6 +90,8 @@ for i in infos:
         newso = patch_so(zin.read(i)); d = b64(newso)
     elif i.filename == DX:
         newdx = patch_dx(zin.read(i)); d = b64(newdx)
+    elif i.filename == SA:
+        newsa = patch_words(zin.read(i), SA_EDITS, "shaderapidx9"); d = b64(newsa)
     else:
         h = hashlib.sha256()
         with zin.open(i) as f:
@@ -82,6 +101,7 @@ for i in infos:
 assert newjs is not None, "launcher.js not found"
 assert newso is not None, "libsourcevr.so not found"
 assert newdx is not None, "libdxvk_d3d9.so not found"
+assert newsa is not None, "libshaderapidx9.so not found"
 mf_main = "Manifest-Version: 1.0\r\nCreated-By: quest1-patcher\r\n\r\n"
 MF = (mf_main + "".join(s for _, s in sections)).encode()
 SF = ("Signature-Version: 1.0\r\nCreated-By: quest1-patcher\r\n"
@@ -125,6 +145,8 @@ with open(tmp, "wb") as out:
             put_bytes(SO, newso, i.date_time, stored=(i.compress_type == 0)); continue
         if i.filename == DX:
             put_bytes(DX, newdx, i.date_time, stored=(i.compress_type == 0)); continue
+        if i.filename == SA:
+            put_bytes(SA, newsa, i.date_time, stored=(i.compress_type == 0)); continue
         assert i.compress_type in (0, 8), (i.filename, i.compress_type)
         def copy(i=i):
             n = raw_data(i)
@@ -137,5 +159,5 @@ os.replace(tmp, dst)
 # self-check: every entry reads back with a good CRC, and launcher.js is the patched one
 z = zipfile.ZipFile(dst); bad = z.testzip()
 assert bad is None, ("CRC error in", bad)
-assert z.read(JS) == newjs and z.read(SO) == newso and z.read(DX) == newdx
+assert z.read(JS) == newjs and z.read(SO) == newso and z.read(DX) == newdx and z.read(SA) == newsa
 print("OK wrote", dst, len(cdir), "entries")

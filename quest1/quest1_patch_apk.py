@@ -1,11 +1,12 @@
 """Patch the HL2Quest 1.02 APK so it runs on the original Quest 1 (Snapdragon 835, Horizon OS v50).
-Three fixes, each documented next to its code below:
+Six fixes, each documented next to its code below:
   1. Launcher menu: launcher.js uses ?. and ?? (Chrome 80+); the Quest 1 WebView is Chrome 74, so the
      whole script fails to parse and the menu is blank. The 6 edits rewrite them as plain checks.
   2. OpenXR: libsourcevr.so asks for API 1.1; the Quest 1 runtime only accepts 1.0.
   3. DXVK: libdxvk_d3d9.so requires a Vulkan extension and features the Adreno 540 driver lacks.
   4. DX level: libshaderapidx9.so tests sRGB support on DXT1, which the Quest 1 can't read at all.
   5. Manifest: the game activity needs com.oculus.intent.category.VR or v50 shows it as a flat panel.
+  6. Models: compressed vertices use vertex formats the Adreno 540 lacks, so models draw black and spiked.
 Every other APK entry is copied unchanged (raw bytes), and the APK is v1-signed with our own key
 (targetSdk 24, so v1 is enough). Different key from the official APK: uninstall that first.
 Usage: python3 quest1_patch_apk.py hl2quest-vr-1.02.apk hl2quest-vr-1.02-quest1.apk WORKDIR
@@ -56,8 +57,14 @@ def patch_dx(data):
 # which the Quest 1 does support with sRGB + linear filtering (the follow-up A8R8G8B8 check is unchanged).
 #   mov w6,#0x5844 ; movk w6,#0x3154,lsl#16  ('DXT1')  ->  mov w6,#0x15 (D3DFMT_A8R8G8B8) ; nop
 SA = "lib/arm64-v8a/libshaderapidx9.so"
+# Fix 6: with DX level 90, Source turns on compressed vertices for models (normals as UBYTE4, bone
+# weights as SHORT2). DXVK 1.9.2 maps those to R8G8B8A8_USCALED / R16G16_SSCALED, which the Adreno 540
+# doesn't support as vertex formats (no format features at all), so models draw black and spiked.
+# Do what the engine's own -no_compressed_verts does: store m_SupportsCompressedVertices = NONE.
+#   str w8,[x19,#0x224]  ->  str wzr,[x19,#0x224]
 SA_EDITS = [(0x8c3c0, 0x528b0886, 0x528002a6),
-            (0x8c3e4, 0x72a62a86, 0xd503201f)]
+            (0x8c3e4, 0x72a62a86, 0xd503201f),
+            (0x8c834, 0xb9022668, 0xb902267f)]
 def patch_words(data, edits, what):
     d = bytearray(data)
     for off, old, new in edits:

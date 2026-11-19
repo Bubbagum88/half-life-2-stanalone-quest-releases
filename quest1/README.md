@@ -5,8 +5,8 @@ This folder is not part of the official releases. It patches the official
 (Snapdragon 835 / Adreno 540, Horizon OS v50, Android 10). Only Portal has been tried so far.
 
 **Status: not playable yet.** With fixes 1-5 Portal's main menu runs in VR on
-the Quest 1, at about 26 fps of 72 with `eye_scale` 70. Loading a map is not
-tested yet.
+the Quest 1, at about 26 fps of 72 with `eye_scale` 70, and Test Chamber 00
+loads (16-19 fps, about 180 MB free memory). Fix 6 makes models draw correctly.
 
 ## What the patch changes
 
@@ -20,6 +20,7 @@ checks every byte it replaces, so it refuses to run on any other APK.
 | 3 | `lib/arm64-v8a/libdxvk_d3d9.so` (DXVK 1.9.2) | `Required Vulkan extension VK_KHR_image_format_list not supported`. D3D9 also forces `geometryShader`, `multiViewport`, `textureCompressionBC`, `occlusionQueryPrecise`, all 0 on the Adreno 540 (driver 512.555, Vulkan 1.1.128). | `image_format_list` marked Optional in `DxvkAdapter::createDevice`. The four features are no longer forced in `D3D9DeviceEx::GetDeviceFeatures`. 4 instructions. | Yes, Vulkan device and swapchain created |
 | 4 | `lib/arm64-v8a/libshaderapidx9.so` (file offsets `0x8c3c0`, `0x8c3e4`) | Source only allows DX level 90 with VS 2.0 + PS 2.0 + sRGB, and it tests sRGB by asking for sRGB reads on **DXT1** textures. The Adreno 540 has no DXT/BC, so the maximum DX level drops to 80/81, `stdshader_dx9` is never loaded, and every material fails (`unknown shader "UnlitGeneric"`); `-dxlevel 90` can't raise the maximum. | The sRGB test asks about A8R8G8B8 instead (supported with sRGB and linear filtering on Quest 1). The follow-up A8R8G8B8 sRGB+filter check is unchanged. | Yes, main menu loads, materials work |
 | 5 | `AndroidManifest.xml` | The game activity (`SDLActivity`) is marked VR with the OpenXR category `org.khronos.openxr.intent.category.IMMERSIVE_HMD`. Horizon OS v50 doesn't know it and opens the game as a 2D panel ("launching as reprojected android app"), so the XR session is never shown: a black flat box. | Category string replaced with `com.oculus.intent.category.VR` in the binary manifest's string pool. | Yes, main menu in VR |
+| 6 | `lib/arm64-v8a/libshaderapidx9.so` (file offset `0x8c834`) | At DX level 90 Source stores model vertices compressed: normals as `UBYTE4` and bone weights as `SHORT2`. DXVK 1.9.2 maps those to `R8G8B8A8_USCALED` and `R16G16_SSCALED`, which the Adreno 540 doesn't support as vertex formats (the Quest 1's Vulkan report lists no features for them). Every model (hands, portal gun, Chell, props) draws solid black, and skinned ones are spiked. | Compressed vertices turned off, the same store the engine's own `-no_compressed_verts` option makes (`str w8` to `str wzr`). | Yes with `-no_compressed_verts`; the patched APK not yet |
 
 The APK is re-signed with our own key (v1 is enough, targetSdk 24). It
 can't install over the official app, so uninstall that first. Your saved
@@ -69,8 +70,12 @@ GPU without DXT. Fix 4 changes that format.
 
 ## Still open after that
 
-- DXT textures: the Adreno 540 can't sample BC formats, so Source has to
-  convert them at load time, or the PC cache builder has to write uncompressed ones.
+- DXT textures: the Adreno 540 can't sample BC formats. World textures draw
+  correctly in Test Chamber 00, so they are converted somewhere; memory cost unknown.
+- Crouching breaks the player's own body (Chell) into shards, also with
+  `mat_softwareskin 1`, so it isn't the GPU. The log warns "bad bone weights"
+  for `chell_p1/p2_reference`. Not known whether a Quest 3 shows it too.
+- `materials/models/weapons/v_models/v_hands/v_hands.vtf` not found (cause not checked).
 - DXVK's internal layered-image copies use a geometry shader when
   `VK_EXT_shader_viewport_index_layer` is missing (Quest 1 has neither).
 - Starting games from the launcher on Quest 1.
